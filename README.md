@@ -9,12 +9,12 @@ A Discord bot that **scrapes SOLUS webhook checkout messages**, tracks purchases
 - **Auto-parse checkouts** — Watches designated channels for SOLUS webhook embeds and extracts user, item, site, and profile
 - **Discord profiles** — Profiles created when users join; store address/state/zip only (no card/VCC data)
 - **Canonical profile matching** — SOLUS profile `"UserName PKC #1"` matches canonical `username` (username without numbers)
-- **Balance tracking** — `!paid` / `!owe` to record payments and adjustments; `!balance` shows owed, paid, and current balance
+- **Balance tracking** — `!paid` / `!owe` to record payments and adjustments; `!balance` shows owed, paid, and current balance; `!history` lists recent entries with notes
 - **Checkout stats** — Total, success, and declined counts per user
 - **User & profile tracking** — Link profiles to users; auto-infer user from profile when embed has no @user
 - **Display names & aliases** — Set display names for invoices; use aliases so `!summary shortcut` = `!summary UserName`
 - **Custom pricing formula** — Configurable margin multiplier (e.g., 50% profit split)
-- **Manual price input** — Set retail/market by item keyword, by site, or by **site + item** together (different MSRP per retailer)
+- **Manual price input** — Set retail/market by item keyword, by site, or by **site + item** together (different MSRP per retailer); bulk updates affecting **2+** matching checkouts require a ✅ confirmation reaction
 - **Summary & invoices** — View all users or per-user totals; generate detailed invoices
 - **Post to channel** — Bulk post all user invoices to a billing channel
 - **CSV export** — Export all checkouts to a spreadsheet
@@ -85,9 +85,9 @@ You should see: `✅ Logged in as YourBot#1234`
 
 | Command | Example | Description |
 |---------|---------|-------------|
-| `!setprice` | `!setprice "Bowman's Best" 149.99 219.99` | Set retail & market price for all checkouts matching that item keyword |
-| `!setpricesite` | `!setpricesite Toppsus 149.99 219.99` | Bulk-set retail & market for all checkouts from a site |
-| `!setpricesiteitem` | `!setpricesiteitem Target "Prismatic Evolutions Booster Bundle" 31.99 75` | Set retail & market only when **both** site and item match (substring match; use `!export` to see exact strings) |
+| `!setprice` | `!setprice "Bowman's Best" 149.99 219.99` | Set retail & market for matching item keyword (✅ confirm if **2+** rows) |
+| `!setpricesite` | `!setpricesite Toppsus 149.99 219.99` | Bulk-set retail & market for a site (✅ confirm if **2+** rows) |
+| `!setpricesiteitem` | `!setpricesiteitem Target "Prismatic Evolutions Booster Bundle" 31.99 75` | Site + item match (substring; `!export` for exact strings); ✅ confirm if **2+** rows |
 | `!summary` | `!summary` | Show everyone's checkout totals |
 | `!summary UserName` | `!summary UserName` | Show totals for a specific user (accepts aliases) |
 | `!invoice` | `!invoice UserName` | Generate a detailed invoice for one user (accepts aliases) |
@@ -114,6 +114,7 @@ You should see: `✅ Logged in as YourBot#1234`
 |---------|---------|-------------|
 | `!profile` | `!profile` or `!profile UserName` | Show profile (address, stats, balance) with PFP |
 | `!balance` | `!balance` or `!balance @user` | Show balance: owed, paid, adjustments |
+| `!history` | `!history` / `!history 20` / `!history UserName` / `!history UserName 20` | Recent `!paid` / `!owe` lines with notes (default 10, max 50; admins can target another user) |
 | `!myaddress` | `!myaddress 123 Main St CA 90210` | Set your own address, state, zip |
 
 ---
@@ -165,12 +166,18 @@ Adjust `PRICE_MARGIN_MULTIPLIER` in `config.py` to match your split (e.g. `0.75`
 
 ```
 dataproject/
-├── bot.py              # Main bot logic
-├── config.example.py   # Example config (copy to config.py)
-├── requirements.txt   # Python dependencies
-├── README.md           # This file
-├── .gitignore          # Excludes config.py, checkouts.db
-└── checkouts.db        # SQLite DB (created on first run; do not commit)
+├── bot.py                 # Entry: loads cogs, runs bot
+├── common.py              # DB init, helpers, checkout parsing, pricing math
+├── cogs/
+│   ├── checkout_listener.py  # SOLUS webhook channel listener
+│   ├── pricing.py            # !setprice, !setpricesite, !setpricesiteitem
+│   ├── balance.py            # !balance, !paid, !owe, !history
+│   └── core.py               # profiles, summaries, invoices, export, etc.
+├── config.example.py    # Example config (copy to config.py)
+├── requirements.txt     # Python dependencies
+├── README.md            # This file
+├── .gitignore           # Excludes config.py, checkouts.db
+└── checkouts.db         # SQLite DB (created on first run; do not commit)
 ```
 
 ---
