@@ -14,7 +14,7 @@ A Discord bot that **scrapes SOLUS webhook checkout messages**, tracks purchases
 - **User & profile tracking** — Link profiles to users; auto-infer user from profile when embed has no @user
 - **Display names & aliases** — Set display names for invoices; use aliases so `!summary shortcut` = `!summary UserName`
 - **Custom pricing formula** — Configurable margin multiplier (e.g., 50% profit split)
-- **Manual price input** — Set retail/market prices by item keyword or by site in bulk
+- **Manual price input** — Set retail/market by item keyword, by site, or by **site + item** together (different MSRP per retailer)
 - **Summary & invoices** — View all users or per-user totals; generate detailed invoices
 - **Post to channel** — Bulk post all user invoices to a billing channel
 - **CSV export** — Export all checkouts to a spreadsheet
@@ -87,14 +87,15 @@ You should see: `✅ Logged in as YourBot#1234`
 |---------|---------|-------------|
 | `!setprice` | `!setprice "Bowman's Best" 149.99 219.99` | Set retail & market price for all checkouts matching that item keyword |
 | `!setpricesite` | `!setpricesite Toppsus 149.99 219.99` | Bulk-set retail & market for all checkouts from a site |
+| `!setpricesiteitem` | `!setpricesiteitem Target "Prismatic Evolutions Booster Bundle" 31.99 75` | Set retail & market only when **both** site and item match (substring match; use `!export` to see exact strings) |
 | `!summary` | `!summary` | Show everyone's checkout totals |
 | `!summary UserName` | `!summary UserName` | Show totals for a specific user (accepts aliases) |
 | `!invoice` | `!invoice UserName` | Generate a detailed invoice for one user (accepts aliases) |
 | `!postinvoices` | `!postinvoices #billing` | Post all user invoices to the specified channel |
 | `!export` | `!export` | Export all checkouts to CSV (uploaded as attachment) |
 | `!setaddress` | `!setaddress UserName 123 Main St CA 90210` | Set address, state, zip for a user |
-| `!paid` | `!paid UserName 25` | Record a payment (reduces balance) |
-| `!owe` | `!owe UserName 25` | Add to balance (fees, adjustments) |
+| `!paid` | `!paid UserName 25` or `!paid UserName 25 note text` | Record a payment (reduces balance); anything after the amount is stored as a note |
+| `!owe` | `!owe UserName 25` or `!owe UserName 25 note text` | Add to balance (fees, adjustments); anything after the amount is stored as a note |
 | `!stats` | `!stats [username]` | Show checkout stats (total, success, declined) |
 | `!syncprofiles` | `!syncprofiles` | Create profiles for all current members |
 | **User & profile tracking** | | |
@@ -129,6 +130,7 @@ SOLUS webhooks fire in #checkouts
          ▼
   You run:  !setprice "Bowman's Best" 149.99 219.99
             !setpricesite Toppsus 149.99 219.99
+            !setpricesiteitem Target "Item name" 31.99 75
          │
          ▼
   Formula auto-calculates member cost
@@ -207,8 +209,9 @@ When a checkout embed has **profile but no @user**, the bot infers the user from
 ## Embed Format (SOLUS webhook)
 
 The bot expects embeds with:
-- **Description:** Contains `@Username` and optionally status (✅ / Success)
-- **Fields:** `Site`, `Item`, `Profile` (case-insensitive)
+
+- **Description:** Contains `@Username` or a Discord mention (`<@userId>`), and optionally status (✅ / Success)
+- **Fields:** `Site`, `Item`, `Profile` (case-insensitive). Common aliases are recognized (e.g. Store/Retailer → site, Product → item).
 
 If your webhook format differs, you may need to tweak `parse_checkout_embed()` in `bot.py`.
 
