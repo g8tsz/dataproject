@@ -320,6 +320,37 @@ def calculate_price(retail: float | None, market: float | None, quantity: int = 
     }
 
 
+_EMBED_FIELD_ALIASES = {
+    "site": "site",
+    "store": "site",
+    "retailer": "site",
+    "website": "site",
+    "shop": "site",
+    "vendor": "site",
+    "item": "item",
+    "product": "item",
+    "products": "item",
+    "sku": "item",
+    "name": "item",
+    "profile": "profile",
+    "account": "profile",
+    "solus profile": "profile",
+}
+
+
+def _normalize_embed_field_name(raw: str) -> str:
+    s = raw.strip().lower()
+    s = re.sub(r"^[*_`]+|[*_`]+$", "", s)
+    s = s.rstrip(":").strip()
+    return s
+
+
+def _checkout_item_site_labels(co: dict) -> tuple[str, str]:
+    item = co.get("item") or "Unknown item"
+    site = co.get("site") or "Unknown site"
+    return item, site
+
+
 def parse_checkout_embed(embed: discord.Embed, message: discord.Message) -> dict | None:
     try:
         data = {
@@ -335,19 +366,25 @@ def parse_checkout_embed(embed: discord.Embed, message: discord.Message) -> dict
         desc = embed.description or ""
         user_match = re.search(r"@(\S+)", desc)
         if user_match:
-            data["user"] = user_match.group(1)
+            data["user"] = user_match.group(1).rstrip(".,;:!?)")
+        mention_id = re.search(r"<@!?(\d+)>", desc)
+        if mention_id:
+            data["_mention_user_id"] = mention_id.group(1)
         if "✅" in desc or "Success" in desc.lower():
             data["status"] = "Success"
         elif "❌" in desc or "Declined" in desc:
             data["status"] = "Declined"
         for field in embed.fields:
-            name = field.name.strip().lower()
-            value = field.value.strip()
-            if name == "site":
+            key = _normalize_embed_field_name(field.name or "")
+            key = _EMBED_FIELD_ALIASES.get(key, key)
+            value = (field.value or "").strip()
+            if not value:
+                continue
+            if key == "site":
                 data["site"] = value
-            elif name == "item":
+            elif key == "item":
                 data["item"] = value
-            elif name == "profile":
+            elif key == "profile":
                 data["profile"] = value
         return data
     except Exception as e:
@@ -396,6 +433,14 @@ async def on_message(message: discord.Message):
             if parsed:
                 user = parsed.get("user")
                 profile = parsed.get("profile")
+                mid = parsed.pop("_mention_user_id", None)
+                if not user and mid and message.guild:
+                    try:
+                        mem = message.guild.get_member(int(mid)) or await message.guild.fetch_member(int(mid))
+                        if mem:
+                            user = mem.name
+                    except (ValueError, discord.NotFound):
+                        pass
                 if not user and profile:
                     user = _resolve_profile_to_user(profile)
                 if not user and profile:
@@ -443,11 +488,17 @@ def _get_checkouts(user: str | None = None, since: str | None = None) -> list[di
 async def set_price(ctx, item_keyword: str, retail: float, market: float):
     conn = get_connection()
     c = conn.cursor()
-    c.execute("UPDATE checkouts SET retail_price = ?, market_price = ? WHERE LOWER(item) LIKE ?", (retail, market, f"%{item_keyword.lower()}%"))
+    c.execute(
+        "UPDATE checkouts SET retail_price = ?, market_price = ? WHERE LOWER(COALESCE(item, '')) LIKE ?",
+        (retail, market, f"%{item_keyword.lower()}%"),
+    )
     updated = c.rowcount
     conn.commit()
     conn.close()
-    await ctx.send(f"Updated **{updated}** checkouts matching `{item_keyword}`")
+    hint = ""
+    if updated == 0:
+        hint = " No rows matched — item text may differ from the keyword, or site+item pricing may fit better: `!setpricesiteitem`."
+    await ctx.send(f"Updated **{updated}** checkouts matching `{item_keyword}`.{hint}")
 
 
 @bot.command(name="setpricesite")
@@ -455,11 +506,36 @@ async def set_price(ctx, item_keyword: str, retail: float, market: float):
 async def set_price_by_site(ctx, site: str, retail: float, market: float):
     conn = get_connection()
     c = conn.cursor()
-    c.execute("UPDATE checkouts SET retail_price = ?, market_price = ? WHERE LOWER(site) LIKE ?", (retail, market, f"%{site.lower()}%"))
+    c.execute(
+        "UPDATE checkouts SET retail_price = ?, market_price = ? WHERE LOWER(COALESCE(site, '')) LIKE ?",
+        (retail, market, f"%{site.lower()}%"),
+    )
     updated = c.rowcount
     conn.commit()
     conn.close()
-    await ctx.send(f"Updated **{updated}** checkouts from `{site}`")
+    hint = ""
+    if updated == 0:
+        hint = " No rows matched — check exact site string in `!export`."
+    await ctx.send(f"Updated **{updated}** checkouts from `{site}`.{hint}")
+
+
+@bot.command(name="setpricesiteitem")
+@commands.has_permissions(administrator=True)
+async def set_price_by_site_and_item(ctx, site_keyword: str, item_keyword: str, retail: float, market: float):
+    """Set retail & market only for rows matching both site and item substrings (per-retailer MSRP)."""
+    conn = get_connection()
+    c = conn.cursor()
+    c.execute(
+        "UPDATE checkouts SET retail_price = ?, market_price = ? WHERE LOWER(COALESCE(site, '')) LIKE ? AND LOWER(COALESCE(item, '')) LIKE ?",
+        (retail, market, f"%{site_keyword.lower()}%", f"%{item_keyword.lower()}%"),
+    )
+    updated = c.rowcount
+    conn.commit()
+    conn.close()
+    hint = ""
+    if updated == 0:
+        hint = " No rows matched — check `!export` for exact site/item text, or ensure checkouts were parsed (embed fields)."
+    await ctx.send(f"Updated **{updated}** checkouts matching site `{site_keyword}` and item `{item_keyword}`.{hint}")
 
 
 @bot.command(name="profile")
@@ -575,7 +651,8 @@ async def record_payment(ctx, user_ref: str, amount: float, *, note: str = ""):
     author_name = ctx.author.display_name or ctx.author.name
     if ctx.guild:
         await _log_payment(ctx.bot, ctx.guild.id, "PAID", canonical, amount, note, author_name)
-    await ctx.send(f"Recorded payment of **${amount:.2f}** for **{canonical}**.")
+    extra = f"\nNote: {note}" if note.strip() else ""
+    await ctx.send(f"Recorded payment of **${amount:.2f}** for **{canonical}**.{extra}")
 
 
 @bot.command(name="owe")
@@ -592,7 +669,8 @@ async def record_owe(ctx, user_ref: str, amount: float, *, note: str = ""):
     author_name = ctx.author.display_name or ctx.author.name
     if ctx.guild:
         await _log_payment(ctx.bot, ctx.guild.id, "OWE", canonical, amount, note, author_name)
-    await ctx.send(f"Added **${amount:.2f}** to balance for **{canonical}**.")
+    extra = f"\nNote: {note}" if note.strip() else ""
+    await ctx.send(f"Added **${amount:.2f}** to balance for **{canonical}**.{extra}")
 
 
 @bot.command(name="stats")
@@ -758,7 +836,8 @@ async def summary(ctx, username: str = None):
         if user not in user_data:
             user_data[user] = {"items": [], "total": 0.0}
         pricing = calculate_price(co["retail_price"], co["market_price"])
-        item_line = f"- {co['item']} ({co['site']})"
+        item_lbl, site_lbl = _checkout_item_site_labels(co)
+        item_line = f"- {item_lbl} ({site_lbl})"
         if pricing:
             item_line += f" - **${pricing['member_cost']}**"
             user_data[user]["total"] += pricing["member_cost"]
@@ -791,11 +870,12 @@ async def invoice(ctx, username: str):
     grand_total = 0.0
     for co in user_checkouts:
         pricing = calculate_price(co["retail_price"], co["market_price"])
+        item_lbl, site_lbl = _checkout_item_site_labels(co)
         if pricing:
-            lines.append(f"**{co['item']}**\n  Site: {co['site']} | Retail: ${pricing['retail']} | Market: ${pricing['market']} | **You Pay: ${pricing['member_cost']}**")
+            lines.append(f"**{item_lbl}**\n  Site: {site_lbl} | Retail: ${pricing['retail']} | Market: ${pricing['market']} | **You Pay: ${pricing['member_cost']}**")
             grand_total += pricing["member_cost"]
         else:
-            lines.append(f"**{co['item']}** - Price not set yet")
+            lines.append(f"**{item_lbl}** ({site_lbl}) - Price not set yet")
     display = _get_display_name(canonical)
     bal = _get_balance(canonical)
     embed = discord.Embed(title=f"Invoice for {display}", description="\n\n".join(lines), color=0x3498DB)
@@ -821,7 +901,8 @@ async def post_invoices(ctx, channel: discord.TextChannel):
         for co in user_cos:
             p = calculate_price(co["retail_price"], co["market_price"])
             if p:
-                lines.append(f"- {co['item']} ({co['site']}) - **${p['member_cost']}**")
+                item_lbl, site_lbl = _checkout_item_site_labels(co)
+                lines.append(f"- {item_lbl} ({site_lbl}) - **${p['member_cost']}**")
                 total += p["member_cost"]
         if lines:
             label = _get_display_name(user) if user != "Unknown" else user
